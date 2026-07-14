@@ -1,0 +1,14 @@
+{
+  "name": "com.hayden.fiberwebglsdk",
+  "version": "1.0.0",
+  "displayName": "Fiber WebGL SDK",
+  "description": "Unity WebGL integration for the Fiber payment network.",
+  "unity": "6000.0",
+  "samples": [
+    {
+      "displayName": "Payment Flow Demo",
+      "description": "Example UI wiring ConnectPeer, OpenChannel, PayPeer, CloseChannel.",
+      "path": "Samples~/PaymentFlowDemo"
+    }
+  ]
+}
