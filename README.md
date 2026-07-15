@@ -29,8 +29,7 @@ boots a real Fiber node inside your browser - but it needs a **peer** to connect
 You have two options:
 
 **Option A - use Fiber's public testnet bootnode (easiest, nothing to run):**
-paste one of these into the **CONNECT PEER** field - both are run by the Fiber team,
-not us, so if one happens to be down, just try the other:
+paste one of these into the **CONNECT PEER** field - both are run by the Fiber team, if one happens to be down, just try the other:
 
 ```
 /dns4/onyxia.fiber.channel/tcp/443/wss/p2p/QmdyQWjPtbK4NWWsvy8s69NGJaQULwgeQDT5ZpNDrTNaeV
@@ -49,16 +48,14 @@ address like `127.0.0.1` or a LAN IP won't connect from this HTTPS-hosted page).
 2. Wait for the node to boot — the **STATUS** field on the home screen will read
    `NODE READY` once ready (this generates a fresh identity in your browser's local
    storage; it takes a few seconds).
-3. Click **CONNECT PEER**, paste in the address from Option A or B above, and click
+3. Fund the Node's Address using faucet [here](https://faucet.nervos.org/)
+4. Click **CONNECT PEER**, paste in the address from Option A or B above, and click
    **Connect**.
-4. Once connected, you're routed to **OPEN CHANNEL** with the peer's pubkey pre-filled.
-   Click **Open Channel** (this locks a small amount of testnet CKB into the channel —
-   confirmation can take a couple of minutes). This step currently has a known
-   unit-scaling issue with the funding amount - see
+5. Once connected, you're routed to **OPEN CHANNEL** either using Open Channel UI or using the Diagnostics UI. Check
    [docs/Troubleshooting.md](docs/Troubleshooting.md) if it's rejected.
-5. Once the channel is open, you're routed to **PAY**. Click **Pay** to send a real
+6. Once the channel is open, you're routed to **PAY**. Click **Pay** to send a real
    keysend payment over Fiber. A payment hash appears on success.
-6. Click **DIAGNOSTICS** from the home screen at any time to see your connected peers
+7. Click **DIAGNOSTICS** from the home screen at any time to see your connected peers
    and open channels, and to close a channel.
 
 If a step fails, the status text explains why and the step is retryable. Seeing an
