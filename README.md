@@ -155,6 +155,10 @@ see [docs/QuickStart.md](docs/QuickStart.md). Full method-by-method reference:
 
 ---
 
+# Disclaimer: 
+
+AI (Claude) was used as a development aide for research (Fiber/fiber-js RPC behavior, testnet bootnodes), debugging, and documentation drafting. All architecture decisions, code integration, testing, and final review were human-driven. AI output was iterated on and corrected throughout rather than accepted as-is.
+
 ## License
 
 See [LICENSE](LICENSE).
