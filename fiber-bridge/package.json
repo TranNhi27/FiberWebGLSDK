@@ -1,0 +1,20 @@
+{
+  "name": "fiber-bridge",
+  "version": "1.0.0",
+  "description": "JS bridge wrapping @nervosnetwork/fiber-js for the Fiber-Unity SDK",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/bridge.js --bundle --format=iife --outfile=dist/fiber-bridge.bundle.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@nervosnetwork/fiber-js": "0.8.0",
+    "@noble/curves": "1.7.0",
+    "@ckb-ccc/core": "latest"
+  },
+  "devDependencies": {
+    "esbuild": "latest"
+  }
+}
