@@ -74,7 +74,24 @@ namespace FiberWebGLSDK
         {
             _onChannelReady = onChannelReady;
             _onChannelError = onError;
-            string amountHex = "0x" + fundingAmountShannons.ToString("x");
+
+            // WORKAROUND - funding_amount arrives at the native node ~100x smaller than
+            // what's sent. Root-caused via DEBUG-1/2/3 logging on 2026-07-16: the C#
+            // ulong, its hex encoding, and the value bridge.js hands to fiber.openChannel()
+            // are all confirmed correct at every step - the loss happens inside
+            // @nervosnetwork/fiber-js / the WASM node itself, on the pinned 0.8.0 release.
+            // Confirmed against the public onyxia.fiber.channel testnet hub, so this is
+            // not specific to any one node we control.
+            //
+            // Fiber's own v0.9 dev log calls out "more reliable channel funding" and
+            // "fiber-js and npm release improvements" as work done in the 0.8.0 -> 0.9.0-rc
+            // window, which lines up with this bug's shape - but 0.9.0-rc7 is a release
+            // candidate and wasn't risked pre-deadline. Revisit removing this the next
+            // time fiber-js is upgraded: bump the version, rerun an OpenChannel with
+            // logging (see git history around 2026-07-16 for the exact DEBUG lines used),
+            // and remove the ×100 below only if the funding amount arrives correct without it.
+            ulong compensatedAmount = fundingAmountShannons * 100;
+            string amountHex = "0x" + compensatedAmount.ToString("x");
 
 #if UNITY_WEBGL && !UNITY_EDITOR
         Fiber_OpenChannel(peerPubkey, amountHex, isPublic, gameObject.name);
@@ -154,6 +171,11 @@ namespace FiberWebGLSDK
         // channelId comes from bridge.js's openChannel poll (the confirmed ChannelReady channel).
         private void OnChannelReady(string channelId) => _onChannelReady?.Invoke(channelId);
         private void OnChannelError(string err) => _onChannelError?.Invoke(FiberError.Parse(err));
+
+        // bridge.js's closeChannel poll resolves with no args once the channel_id no
+        // longer appears in listChannels (settled on-chain).
+        private void OnChannelClosed() => _onChannelClosed?.Invoke();
+        private void OnCloseChannelError(string err) => _onCloseChannelError?.Invoke(FiberError.Parse(err));
 
         // bridge.js sends the node's whole payment object here, not just a hash.
         // Parse out the fields the SDK surfaces and keep the raw JSON for callers

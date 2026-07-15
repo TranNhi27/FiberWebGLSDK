@@ -5,7 +5,9 @@ using TMPro;
 namespace FiberWebGLSDK.Samples
 {
     /// <summary>
-    /// Attach to a Button. Copies text to the system clipboard on click.
+    /// Attach to a Button. Copies text to the clipboard on click, via
+    /// ClipboardBridge so it works correctly in WebGL builds as well as
+    /// the Editor/standalone.
     ///
     /// Prefers fullTextOverride (set from code via SetFullText) over sourceText,
     /// so the FULL value is copied even when the on-screen text is truncated
@@ -46,9 +48,7 @@ namespace FiberWebGLSDK.Samples
                 ? fullTextOverride
                 : sourceText != null ? sourceText.text : string.Empty;
 
-            if (string.IsNullOrEmpty(textToCopy)) return;
-
-            GUIUtility.systemCopyBuffer = textToCopy;
+            ClipboardBridge.Copy(textToCopy);
         }
     }
 }

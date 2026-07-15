@@ -24031,6 +24031,7 @@ IMPORTANT: Please verify the integrity and authenticity of connected Nostr clien
     // pending). Instead, poll listChannels until the channel's state
     // actually reaches a ready/usable state before reporting success.
     openChannel: async function(peerPubkey, fundingAmountHex, isPublic, onReady, onError) {
+      console.log("[Fiber][DEBUG-3] openChannel funding_amount sent:", fundingAmountHex, "=", BigInt(fundingAmountHex).toString(), "shannons");
       try {
         await fiber.openChannel({
           pubkey: peerPubkey,
@@ -24197,9 +24198,17 @@ IMPORTANT: Please verify the integrity and authenticity of connected Nostr clien
     // v0.8.0: filters by pubkey, not peer_id (peer_id removed from the API).
     // Channel state is a nested { state_name, state_flags } object; the
     // Channel type's peer identifier field is also pubkey now (was peer_id).
+    //
+    // pubkey is optional per Fiber's RPC docs: "if not provided, all channels
+    // will be listed". The field must be ABSENT, not an empty string - passing
+    // "" filters for a peer whose pubkey is empty and matches nothing. So it's
+    // only added when a pubkey is actually given, letting the diagnostics panel
+    // pass "" to list channels across every peer.
     listChannels: async function(peerPubkey, includeClosed, onResult, onError) {
       try {
-        const result = await fiber.listChannels({ pubkey: peerPubkey, include_closed: includeClosed });
+        const params = { include_closed: includeClosed };
+        if (peerPubkey) params.pubkey = peerPubkey;
+        const result = await fiber.listChannels(params);
         onResult(JSON.stringify({
           channels: (result.channels || []).map((c3) => ({
             channel_id: c3.channel_id,
