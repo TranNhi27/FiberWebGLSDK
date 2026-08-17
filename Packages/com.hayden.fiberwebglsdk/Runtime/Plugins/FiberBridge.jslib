@@ -101,6 +101,22 @@ mergeInto(LibraryManager.library, {
             function(json) { SendMessage(callbackTarget, "OnListChannelsResult", json); },
             function(err) { SendMessage(callbackTarget, "OnListChannelsError", err); }
         );
+    },
+
+    // On-chain CKB wallet balance. Queries the CKB chain via ccc, NOT the Fiber
+    // node - so it works before any peer is connected and before any channel
+    // exists, which is exactly what a funding screen needs.
+    //
+    // The result's balanceShannons is a STRING, not a number: shannon amounts run
+    // past Number.MAX_SAFE_INTEGER and JSON has no bigint, so a numeric field would
+    // silently round. C# parses it back to ulong.
+    Fiber_GetBalance: function(callbackTargetPtr) {
+        var callbackTarget = UTF8ToString(callbackTargetPtr);
+
+        window.FiberBridge.getBalance(
+            function(json) { SendMessage(callbackTarget, "OnBalanceResult", json); },
+            function(err) { SendMessage(callbackTarget, "OnBalanceError", err); }
+        );
     }
 
 });

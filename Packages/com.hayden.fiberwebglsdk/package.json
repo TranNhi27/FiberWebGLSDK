@@ -1,6 +1,6 @@
 {
   "name": "com.hayden.fiberwebglsdk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "displayName": "Fiber WebGL SDK",
   "description": "Unity WebGL integration for the Fiber payment network.",
   "unity": "6000.0",
