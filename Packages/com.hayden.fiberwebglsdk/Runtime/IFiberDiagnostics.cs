@@ -89,5 +89,32 @@ namespace FiberWebGLSDK
         /// balance for all payments expected over its lifetime, not just the next one.
         /// </remarks>
         public ulong RemoteBalanceShannons;
+
+        /// <summary>
+        /// The on-chain transaction that settles this channel, once one exists.
+        /// Empty for a healthy channel.
+        /// </summary>
+        /// <remarks>
+        /// The node reports this only from the point the channel begins shutting
+        /// down. A channel that has finished closing is gone from the default
+        /// listing, and with it the only handle on the transaction that paid out -
+        /// so if this matters, read it DURING the close rather than after.
+        /// </remarks>
+        public string ShutdownTransactionHash;
+
+        /// <summary>
+        /// The UDT this channel is funded with, as a type script JSON, or empty
+        /// for a plain CKB channel.
+        /// </summary>
+        /// <remarks>
+        /// CHECK THIS BEFORE REUSING A CHANNEL FOR A PAYMENT. Asset is a fourth
+        /// condition alongside state, enabled, and balance - a CKB channel that is
+        /// ready, enabled and amply funded still cannot carry a UDT payment, and
+        /// nothing in the other three fields hints at why.
+        /// </remarks>
+        public string FundingUdtTypeScript;
+
+        /// <summary>True when this channel moves CKB rather than a token.</summary>
+        public bool IsCkbChannel => string.IsNullOrEmpty(FundingUdtTypeScript);
     }
 }

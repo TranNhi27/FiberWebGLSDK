@@ -12,17 +12,22 @@ using UnityEngine;
 
 namespace FiberWebGLSDK
 {
-    public class FiberPaymentGateway : MonoBehaviour, IPaymentGateway, IFiberDiagnostics, IFiberWallet
+    public class FiberPaymentGateway : MonoBehaviour, IPaymentGateway, IUdtPaymentGateway, IInvoicePaymentGateway, IFiberDiagnostics, IFiberWallet
     {
         [DllImport("__Internal")] private static extern void Fiber_Initialize(string configText, string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_ConnectPeer(string peerAddress, string callbackTarget);
-        [DllImport("__Internal")] private static extern void Fiber_OpenChannel(string peerPubkey, string fundingAmountHex, bool isPublic, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_OpenChannel(string peerPubkey, string fundingAmountHex, string udtScriptJson, bool isPublic, string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_CloseChannel(string channelId, string peerPubkey, bool force, string callbackTarget);
-        [DllImport("__Internal")] private static extern void Fiber_PayPeer(string peerPubkey, string amountHex, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_PayPeer(string peerPubkey, string amountHex, string udtScriptJson, string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_GetNodeInfo(string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_ListPeers(string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_ListChannels(string peerPubkey, bool includeClosed, string callbackTarget);
         [DllImport("__Internal")] private static extern void Fiber_GetBalance(string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_GetUdtBalance(string udtScriptJson, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_AbandonChannel(string channelId, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_DryRunPayment(string peerPubkey, string amountHex, string udtScriptJson, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_PayInvoice(string invoice, string callbackTarget);
+        [DllImport("__Internal")] private static extern void Fiber_ParseInvoice(string invoice, string callbackTarget);
 
         [SerializeField] private FiberNodeConfig config;
 
@@ -35,7 +40,7 @@ namespace FiberWebGLSDK
         private Action<FiberError> _onConnectError;
         private Action<string> _onChannelReady;
         private Action<FiberError> _onChannelError;
-        private Action _onChannelClosed;
+        private Action<ChannelCloseResult> _onChannelClosed;
         private Action<FiberError> _onCloseChannelError;
         private Action<PaymentResult> _onPaymentSuccess;
         private Action<FiberError> _onPaymentError;
@@ -47,6 +52,14 @@ namespace FiberWebGLSDK
         private Action<FiberError> _onListChannelsError;
         private Action<WalletBalance> _onBalance;
         private Action<FiberError> _onBalanceError;
+        private Action<UdtBalance> _onUdtBalance;
+        private Action<FiberError> _onUdtBalanceError;
+        private Action _onChannelAbandoned;
+        private Action<FiberError> _onAbandonChannelError;
+        private Action<RouteQuote> _onDryRun;
+        private Action<FiberError> _onDryRunError;
+        private Action<InvoiceDetails> _onParseInvoice;
+        private Action<FiberError> _onParseInvoiceError;
 
         // ---------------- IPaymentGateway ----------------
 
@@ -104,6 +117,46 @@ namespace FiberWebGLSDK
         /// minimum can mask or mimic this bug.
         /// </remarks>
         public void OpenChannel(string peerPubkey, ulong fundingAmountShannons, bool isPublic, Action<string> onChannelReady, Action<FiberError> onError)
+            => OpenChannelInternal(peerPubkey, fundingAmountShannons, string.Empty, isPublic, onChannelReady, onError);
+
+        /// <summary>
+        /// Opens a channel funded with a UDT rather than CKB. See
+        /// IUdtPaymentGateway.OpenUdtChannel for the contract.
+        /// </summary>
+        /// <remarks>
+        /// THE x100 COMPENSATION IS NOT APPLIED HERE, deliberately. The 100x funding
+        /// loss was measured against CKB and has never been retested against a UDT
+        /// amount. Getting that wrong is asymmetric: compensating a loss that is not
+        /// there over-funds the channel by 100x of a real token, while failing to
+        /// compensate a loss that IS there under-funds it and the open simply fails.
+        /// One of those is recoverable.
+        ///
+        /// Before relying on this, run the same controlled test used for CKB - open
+        /// with a known amount, read what the hub received - and only then decide
+        /// whether to route this through the same compensation.
+        /// </remarks>
+        public void OpenUdtChannel(string peerPubkey, ulong fundingAmount, string udtTypeScriptJson, bool isPublic, Action<string> onChannelReady, Action<FiberError> onError)
+        {
+            if (string.IsNullOrEmpty(udtTypeScriptJson))
+            {
+                onError(new FiberError(FiberErrorCode.ConfigMissing,
+                    "OpenUdtChannel needs a UDT type script - use OpenChannel for CKB."));
+                return;
+            }
+
+            _onChannelReady = onChannelReady;
+            _onChannelError = onError;
+
+            string udtAmountHex = "0x" + fundingAmount.ToString("x");
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_OpenChannel(peerPubkey, udtAmountHex, udtTypeScriptJson, isPublic, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
+        private void OpenChannelInternal(string peerPubkey, ulong fundingAmountShannons, string udtScriptJson, bool isPublic, Action<string> onChannelReady, Action<FiberError> onError)
         {
             _onChannelReady = onChannelReady;
             _onChannelError = onError;
@@ -140,13 +193,31 @@ namespace FiberWebGLSDK
             string amountHex = "0x" + compensatedAmount.ToString("x");
 
 #if UNITY_WEBGL && !UNITY_EDITOR
-        Fiber_OpenChannel(peerPubkey, amountHex, isPublic, gameObject.name);
+        Fiber_OpenChannel(peerPubkey, amountHex, udtScriptJson, isPublic, gameObject.name);
 #else
             onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
 #endif
         }
 
+        /// <summary>
+        /// Closes a channel. Kept for callers that do not need the settlement
+        /// transaction - it simply discards the payload the richer overload delivers.
+        /// </summary>
         public void CloseChannel(string channelId, string peerPubkey, bool force, Action onClosed, Action<FiberError> onError)
+            => CloseChannel(channelId, peerPubkey, force, _ => onClosed?.Invoke(), onError);
+
+        /// <summary>
+        /// Closes a channel and reports the settlement transaction alongside it.
+        /// </summary>
+        /// <remarks>
+        /// The hash is best-effort and CAN come back empty. The node only reports it
+        /// while the channel is shutting down, and bridge.js captures it on its way
+        /// past during the close poll - a close that settles between two polls never
+        /// shows a shutting-down state to catch. Treat an empty hash as "no receipt
+        /// to show", not as a failed close: the close itself is confirmed by the
+        /// callback firing at all.
+        /// </remarks>
+        public void CloseChannel(string channelId, string peerPubkey, bool force, Action<ChannelCloseResult> onClosed, Action<FiberError> onError)
         {
             _onChannelClosed = onClosed;
             _onCloseChannelError = onError;
@@ -158,14 +229,121 @@ namespace FiberWebGLSDK
 #endif
         }
 
+        /// <summary>
+        /// Clears a channel wedged mid-open out of the node's manager and database.
+        /// See IUdtPaymentGateway.AbandonChannel.
+        /// </summary>
+        public void AbandonChannel(string channelId, Action onAbandoned, Action<FiberError> onError)
+        {
+            _onChannelAbandoned = onAbandoned;
+            _onAbandonChannelError = onError;
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_AbandonChannel(channelId, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
+        /// <summary>
+        /// Asks whether a payment could be routed, and what it would cost, without
+        /// sending it. See IUdtPaymentGateway.DryRunPayment.
+        /// </summary>
+        public void DryRunPayment(string peerPubkey, ulong amount, string udtTypeScriptJson, Action<RouteQuote> onResult, Action<FiberError> onError)
+        {
+            _onDryRun = onResult;
+            _onDryRunError = onError;
+            string amountHex = "0x" + amount.ToString("x");
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_DryRunPayment(peerPubkey, amountHex, udtTypeScriptJson ?? string.Empty, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
         public void PayPeer(string peerPubkey, ulong amountShannons, Action<PaymentResult> onSuccess, Action<FiberError> onError)
+            => PayPeerInternal(peerPubkey, amountShannons, string.Empty, onSuccess, onError);
+
+        /// <summary>
+        /// Pays a peer in a UDT rather than CKB. See IUdtPaymentGateway.PayPeerUdt.
+        /// </summary>
+        /// <remarks>
+        /// Routing is restricted to channels funded with this same UDT. A healthy,
+        /// well-funded CKB channel to the same peer cannot carry it - which is a
+        /// failure mode CKB payments simply do not have, and the reason DryRunPayment
+        /// is worth calling first here even though it rarely earns its keep for CKB.
+        /// </remarks>
+        public void PayPeerUdt(string peerPubkey, ulong amount, string udtTypeScriptJson, Action<PaymentResult> onSuccess, Action<FiberError> onError)
+        {
+            if (string.IsNullOrEmpty(udtTypeScriptJson))
+            {
+                onError(new FiberError(FiberErrorCode.ConfigMissing,
+                    "PayPeerUdt needs a UDT type script - use PayPeer for CKB."));
+                return;
+            }
+
+            PayPeerInternal(peerPubkey, amount, udtTypeScriptJson, onSuccess, onError);
+        }
+
+        private void PayPeerInternal(string peerPubkey, ulong amountShannons, string udtScriptJson, Action<PaymentResult> onSuccess, Action<FiberError> onError)
         {
             _onPaymentSuccess = onSuccess;
             _onPaymentError = onError;
             string amountHex = "0x" + amountShannons.ToString("x");
 
 #if UNITY_WEBGL && !UNITY_EDITOR
-        Fiber_PayPeer(peerPubkey, amountHex, gameObject.name);
+        Fiber_PayPeer(peerPubkey, amountHex, udtScriptJson, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
+        // ---------------- IInvoicePaymentGateway ----------------
+
+        /// <summary>
+        /// Pays an invoice. See IInvoicePaymentGateway.PayInvoice.
+        /// </summary>
+        /// <remarks>
+        /// Shares OnPaymentSuccess/OnPaymentError with PayPeer, so a PayInvoice and a
+        /// PayPeer must not be in flight at the same time - the second overwrites the
+        /// first's callbacks. That constraint already applies per-operation across
+        /// this whole class; it just spans two methods here.
+        /// </remarks>
+        public void PayInvoice(string invoiceAddress, Action<PaymentResult> onSuccess, Action<FiberError> onError)
+        {
+            if (string.IsNullOrEmpty(invoiceAddress))
+            {
+                onError(new FiberError(FiberErrorCode.ConfigMissing, "PayInvoice called with an empty invoice."));
+                return;
+            }
+
+            _onPaymentSuccess = onSuccess;
+            _onPaymentError = onError;
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_PayInvoice(invoiceAddress, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
+        /// <summary>
+        /// Decodes an invoice without paying it. See IInvoicePaymentGateway.ParseInvoice.
+        /// </summary>
+        public void ParseInvoice(string invoiceAddress, Action<InvoiceDetails> onResult, Action<FiberError> onError)
+        {
+            if (string.IsNullOrEmpty(invoiceAddress))
+            {
+                onError(new FiberError(FiberErrorCode.ConfigMissing, "ParseInvoice called with an empty invoice."));
+                return;
+            }
+
+            _onParseInvoice = onResult;
+            _onParseInvoiceError = onError;
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_ParseInvoice(invoiceAddress, gameObject.name);
 #else
             onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
 #endif
@@ -219,6 +397,34 @@ namespace FiberWebGLSDK
 #endif
         }
 
+        /// <summary>
+        /// On-chain balance of one UDT held by this node's wallet.
+        /// See IUdtPaymentGateway.GetUdtBalance.
+        /// </summary>
+        /// <remarks>
+        /// A DIFFERENT FAUCET FILLS THIS. The CKB faucet will never move this number.
+        /// A player funded with CKB alone reads zero here, correctly - so a funding
+        /// screen that does not name the asset it wants will strand them.
+        /// </remarks>
+        public void GetUdtBalance(string udtTypeScriptJson, Action<UdtBalance> onResult, Action<FiberError> onError)
+        {
+            if (string.IsNullOrEmpty(udtTypeScriptJson))
+            {
+                onError(new FiberError(FiberErrorCode.ConfigMissing,
+                    "GetUdtBalance needs a UDT type script - use GetBalance for CKB."));
+                return;
+            }
+
+            _onUdtBalance = onResult;
+            _onUdtBalanceError = onError;
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Fiber_GetUdtBalance(udtTypeScriptJson, gameObject.name);
+#else
+            onError(new FiberError(FiberErrorCode.EditorNotSupported, "Editor mode: no Fiber."));
+#endif
+        }
+
         // ---------------- Called by jslib via SendMessage ----------------
         // Method names here are the contract with FiberBridge.jslib. Renaming one
         // breaks silently at runtime: SendMessage logs a missing-method warning
@@ -238,10 +444,115 @@ namespace FiberWebGLSDK
         private void OnChannelError(string err) => _onChannelError?.Invoke(FiberError.Parse(err));
 
         /// <summary>
-        /// Fires with no arguments once the channel id no longer appears in
-        /// listChannels, meaning the close has settled on-chain.
+        /// Fires once the channel id no longer appears in listChannels, meaning the
+        /// close has settled on-chain. Carries the settlement transaction hash when
+        /// bridge.js managed to observe one.
         /// </summary>
-        private void OnChannelClosed() => _onChannelClosed?.Invoke();
+        /// <remarks>
+        /// THIS TOOK NO ARGUMENTS BEFORE. A zero-arg method here against a jslib that
+        /// now sends a string is not a compile error and not a runtime exception -
+        /// SendMessage simply finds nothing and the close hangs forever. Same failure
+        /// shape as the OnChannelReady bug, in the opposite direction.
+        /// </remarks>
+        private void OnChannelClosed(string json)
+        {
+            string channelId = null;
+            string txHash = null;
+
+            try
+            {
+                var data = JsonUtility.FromJson<ChannelCloseJson>(json);
+                channelId = data.channelId;
+                txHash = data.shutdownTxHash;
+            }
+            catch
+            {
+                // The close itself already succeeded - bridge.js only calls this once
+                // the channel is gone. A malformed payload costs the receipt, not the
+                // settlement, so it must not turn into a failure.
+            }
+
+            _onChannelClosed?.Invoke(new ChannelCloseResult
+            {
+                ChannelId = channelId ?? string.Empty,
+                ShutdownTransactionHash = txHash ?? string.Empty
+            });
+        }
+
+        private void OnChannelAbandoned() => _onChannelAbandoned?.Invoke();
+        private void OnAbandonChannelError(string err) => _onAbandonChannelError?.Invoke(FiberError.Parse(err));
+
+        /// <summary>
+        /// A dry run reports "cannot route" through THIS callback, not the error one -
+        /// an unroutable payment is a valid answer to the question that was asked,
+        /// not a failure to answer it. Only a malformed call reaches OnDryRunError.
+        /// </summary>
+        private void OnDryRunResult(string json)
+        {
+            try
+            {
+                var data = JsonUtility.FromJson<DryRunJson>(json);
+                _onDryRun?.Invoke(new RouteQuote
+                {
+                    Routable = data.routable,
+                    FeeShannons = ParseShannons(data.fee),
+                    Reason = data.reason ?? string.Empty
+                });
+            }
+            catch
+            {
+                _onDryRunError?.Invoke(new FiberError(FiberErrorCode.ParseError, json));
+            }
+        }
+
+        private void OnDryRunError(string err) => _onDryRunError?.Invoke(FiberError.Parse(err));
+
+        private void OnUdtBalanceResult(string json)
+        {
+            UdtBalanceJson data;
+            try
+            {
+                data = JsonUtility.FromJson<UdtBalanceJson>(json);
+            }
+            catch
+            {
+                _onUdtBalanceError?.Invoke(new FiberError(FiberErrorCode.ParseError, json));
+                return;
+            }
+
+            if (data == null || !ulong.TryParse(data.balanceShannons, out ulong amount))
+            {
+                _onUdtBalanceError?.Invoke(new FiberError(
+                    FiberErrorCode.ParseError,
+                    $"UDT balance was not a parseable amount: '{data?.balanceShannons}'"));
+                return;
+            }
+
+            _onUdtBalance?.Invoke(new UdtBalance(amount));
+        }
+
+        private void OnUdtBalanceError(string err) => _onUdtBalanceError?.Invoke(FiberError.Parse(err));
+
+        private void OnParseInvoiceResult(string json)
+        {
+            try
+            {
+                var data = JsonUtility.FromJson<InvoiceJson>(json);
+                _onParseInvoice?.Invoke(new InvoiceDetails
+                {
+                    AmountShannons = ParseShannons(data.amount),
+                    Currency = data.currency ?? string.Empty,
+                    PaymentHash = data.paymentHash ?? string.Empty,
+                    UdtTypeScript = data.udtTypeScript ?? string.Empty
+                });
+            }
+            catch
+            {
+                _onParseInvoiceError?.Invoke(new FiberError(FiberErrorCode.ParseError, json));
+            }
+        }
+
+        private void OnParseInvoiceError(string err) => _onParseInvoiceError?.Invoke(FiberError.Parse(err));
         private void OnCloseChannelError(string err) => _onCloseChannelError?.Invoke(FiberError.Parse(err));
 
         /// <summary>
@@ -326,7 +637,9 @@ namespace FiberWebGLSDK
                 StateFlags = c.state_flags,
                 PeerPubkey = c.pubkey,
                 LocalBalanceShannons = ParseShannons(c.local_balance),
-                RemoteBalanceShannons = ParseShannons(c.remote_balance)
+                RemoteBalanceShannons = ParseShannons(c.remote_balance),
+                ShutdownTransactionHash = c.shutdown_transaction_hash ?? string.Empty,
+                FundingUdtTypeScript = c.funding_udt_type_script ?? string.Empty
             });
             _onListChannels?.Invoke(channels);
         }
@@ -371,12 +684,16 @@ namespace FiberWebGLSDK
         // Field names must match bridge.js's output keys exactly. JsonUtility
         // silently leaves unmatched fields at their default value.
 
-        [Serializable] private class NodeInfoJson { public string pubkey; public string ckbAddress; }
+        [Serializable] private class NodeInfoJson { public string pubkey; public string ckbAddress; public string udtCfgInfos; }
         [Serializable] private class PaymentJson { public string payment_hash; public string status; }
         [Serializable] private class PeerInfoJson { public string pubkey; public string address; }
         [Serializable] private class PeerInfoListJson { public PeerInfoJson[] peers; }
-        [Serializable] private class ChannelInfoJson { public string channel_id; public string channel_outpoint; public bool enabled; public string state_name; public string state_flags; public string pubkey; public string local_balance; public string remote_balance; }
+        [Serializable] private class ChannelInfoJson { public string channel_id; public string channel_outpoint; public bool enabled; public string state_name; public string state_flags; public string pubkey; public string local_balance; public string remote_balance; public string shutdown_transaction_hash; public string funding_udt_type_script; }
         [Serializable] private class ChannelInfoListJson { public ChannelInfoJson[] channels; }
         [Serializable] private class BalanceJson { public string balanceShannons; }
+        [Serializable] private class UdtBalanceJson { public string balanceShannons; }
+        [Serializable] private class ChannelCloseJson { public string channelId; public string shutdownTxHash; }
+        [Serializable] private class DryRunJson { public bool routable; public string fee; public string reason; }
+        [Serializable] private class InvoiceJson { public string amount; public string currency; public string paymentHash; public string udtTypeScript; }
     }
 }
