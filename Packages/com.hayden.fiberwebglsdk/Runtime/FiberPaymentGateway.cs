@@ -7,6 +7,7 @@
 // component by GameObject name. The GameObject must have a unique name in the
 // scene, and the callback method names below must match those in FiberBridge.jslib.
 using System;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
@@ -189,7 +190,9 @@ namespace FiberWebGLSDK
             // hub's open_channel_auto_accept_min_ckb_funding_amount; landing exactly on
             // that boundary is fragile (rounding, fees, or a strict < vs <= comparison
             // can tip it either way).
-            ulong compensatedAmount = fundingAmountShannons * 100;
+            // ulong compensatedAmount = fundingAmountShannons * 100;
+            ulong compensatedAmount = fundingAmountShannons;
+
             string amountHex = "0x" + compensatedAmount.ToString("x");
 
 #if UNITY_WEBGL && !UNITY_EDITOR
@@ -619,10 +622,43 @@ namespace FiberWebGLSDK
         /// bridge.js stringifies them. 0 is the safe fallback for channel balances:
         /// it makes a malformed entry read as unusable capacity rather than failing
         /// the whole ListChannels call.
+        ///
+        /// THAT FALLBACK HID A REAL BUG FOR A WHILE, so it is worth stating what it
+        /// costs. Zero is a sane answer for ONE malformed channel in a list. It is a
+        /// catastrophic answer when the format is wrong for EVERY entry: a live channel
+        /// holding thousands of CKB reports empty, a cash-out screen offers nothing to
+        /// withdraw, and nothing anywhere logs a complaint. If this returns zero for
+        /// something that should hold money, suspect the FORMAT before the channel.
+        ///
+        /// It is shared by three callers and the third is the dangerous one:
+        /// ChannelInfo balances, RouteQuote.FeeShannons, and InvoiceDetails.AmountShannons.
+        /// An invoice amount that parses as zero passes MatchesExpected against nothing
+        /// and clears any maximum-acceptable bound trivially - so a decimal-only parser
+        /// here silently disables invoice verification entirely.
         /// </remarks>
         private static ulong ParseShannons(string s)
         {
-            return ulong.TryParse(s, out ulong value) ? value : 0UL;
+            if (string.IsNullOrWhiteSpace(s)) return 0UL;
+
+            s = s.Trim();
+
+            // HEX IS THE NORMAL CASE. fnn's JSON-RPC returns amounts as "0x15b115d9f40",
+            // not as decimal. A parser that only accepts decimal does not throw and does
+            // not warn - it falls through to the zero below, and every balance in the
+            // system silently reads as empty.
+            if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            {
+                return ulong.TryParse(
+                    s.Substring(2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out ulong hex) ? hex : 0UL;
+            }
+
+            // Decimal accepted too. Not every field in every fnn version is hex, and this
+            // helper is shared by channel balances, route fees and invoice amounts.
+            return ulong.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                out ulong dec) ? dec : 0UL;
         }
 
         private void OnListChannelsResult(string json)
@@ -667,13 +703,20 @@ namespace FiberWebGLSDK
                 return;
             }
 
-            if (data == null || !ulong.TryParse(data.balanceShannons, out ulong shannons))
+            // Empty/missing is a parse failure here, unlike ParseShannons' silent zero:
+            // this path reports an error instead, because a funding screen showing 0 for a
+            // failed read leaves the player waiting for funds that already arrived.
+            if (data == null || string.IsNullOrWhiteSpace(data.balanceShannons))
             {
                 _onBalanceError?.Invoke(new FiberError(
                     FiberErrorCode.ParseError,
                     $"Balance was not a parseable shannon amount: '{data?.balanceShannons}'"));
                 return;
             }
+
+            // Same hex-or-decimal handling as every other amount off this node. Reading it
+            // as decimal-only reported every funded wallet as empty.
+            ulong shannons = ParseShannons(data.balanceShannons);
 
             _onBalance?.Invoke(new WalletBalance(shannons));
         }

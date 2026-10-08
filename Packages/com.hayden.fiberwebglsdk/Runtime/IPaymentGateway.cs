@@ -78,6 +78,19 @@ namespace FiberWebGLSDK
         void CloseChannel(string channelId, string peerPubkey, bool force, Action onClosed, Action<FiberError> onError);
 
         /// <summary>
+        /// Closes a channel and reports the settlement transaction alongside it.
+        /// </summary>
+        /// <remarks>
+        /// Prefer this over the bare-Action overload when the settlement transaction matters -
+        /// a cash-out screen, say. The hash is best-effort and can come back empty on
+        /// <see cref="ChannelCloseResult.ShutdownTransactionHash"/>: the node reports it only
+        /// while the channel is shutting down, and a close that settles between two polls
+        /// never shows that state to catch. An empty hash means "no receipt to show", not a
+        /// failed close - the close is confirmed by the callback firing at all.
+        /// </remarks>
+        void CloseChannel(string channelId, string peerPubkey, bool force, Action<ChannelCloseResult> onClosed, Action<FiberError> onError);
+
+        /// <summary>
         /// Sends a payment to a peer via keysend - no invoice required.
         /// Routes over any usable channel to that peer, so no channel id is needed.
         /// </summary>
