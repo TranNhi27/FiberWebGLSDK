@@ -2,21 +2,21 @@
 
 ## Known limitations
 
-- **No invoice support yet.** `PayPeer` only supports keysend (direct pubkey payment).
-  `newInvoice` / `sendPaymentWithInvoice` are not yet exposed - `bridge.js` has no
-  functions for them. This is the natural next extension: everything downstream
-  (polling pattern, error codes, UI conventions) is already established by `PayPeer`.
-- **Channels are opened private by default** (`isPublic: false`) in the sample - the
-  channel is not announced on the gossip graph. `IPaymentGateway.OpenChannel` still
-  exposes the `isPublic` parameter for SDKs that need public channels.
-- **No client-side minimum-funding validation.** Testnet hubs may enforce their own
-  minimum (e.g. 100 CKB) - this is hub policy, not a protocol rule, so it isn't
-  hardcoded into the SDK. A too-small funding amount surfaces as a rejected
-  `ChannelOpenFailed` from the RPC instead of failing fast in Unity.
+- **The node's key is stored in the browser.** The node creates its key on first start,
+  keeps it in `localStorage`, and signs for the player, which is why there's no wallet
+  prompt. That's fine for testnet faucet CKB, but not for real funds: a production game
+  should let players approve channel open and close in their own wallet. Clearing site
+  data also deletes the key, and any funds held by it.
+- **Channels are opened private by default** (`isPublic: false`) in the sample, so the
+  channel isn't announced on the gossip graph. `OpenChannel` still has the `isPublic`
+  parameter if you need public channels.
+- **No client-side minimum-funding check.** Hubs can set their own minimum (e.g. 100
+  CKB). That's hub policy, not a protocol rule, so the SDK doesn't hardcode it. A
+  too-small amount comes back as `ChannelOpenFailed` instead of failing early in Unity.
 
 ---
 
-## Errors you'll actually hit
+## Common errors
 
 ### `CrossOriginIsolationRequired`
 
@@ -29,57 +29,50 @@ crossOriginIsolated // must be true
 
 ### `ChannelOpenFailed` after a long wait
 
-`OpenChannel` polls for on-chain confirmation for up to 2 minutes before giving up.
-Common causes: the peer isn't actually connected, the pubkey was typo'd, the funding
-amount is below the hub's auto-accept minimum (see below), or it's genuinely still
-pending on-chain and just needs a retry.
+`OpenChannel` waits for on-chain confirmation for a while before giving up. Common
+causes: the peer isn't connected, the pubkey has a typo, the funding amount is below the
+hub's minimum, or the open is still pending on-chain.
 
-### Funding amount arrives ~100x smaller than sent
+**Check before retrying.** A slow CKB RPC behind the peer can push an open past the
+timeout even though it succeeds a minute later. Call `ListChannels` for that peer - if
+the channel is there and ready, just use it.
 
-**Symptom:** a channel open fails or never confirms, and (if you have terminal access to
-the peer's own node) its log shows something like:
+### Retries fail after a failed open
+
+A failed open can leave a half-created channel in the node, and every retry then fails.
+Find it with `ListChannels` and remove it with `AbandonChannel(channelId, ...)`, then
+open again.
+
+### `PaymentFailed` on a UDT payment
+
+UDT payments only route over channels funded with the same UDT. A CKB channel to the
+same peer can't carry them. `DryRunPayment` tells you why there's no route.
+
+### `CloseChannel` succeeds but the transaction hash is empty
+
+This can happen. The hash is only visible while the channel is shutting down, and a fast
+close can finish between two checks. The close itself still succeeded. Link a block
+explorer on the player's CKB address instead.
+
+---
+
+## Funding amount arrived ~100x smaller (fixed)
+
+On `@nervosnetwork/fiber-js` `0.8.0`, funding amounts reached the peer about 100x
+smaller than sent. We logged the amount at every step on our side (the C# `ulong`, the
+hex string the gateway builds, and the value `bridge.js` passes to `fiber.openChannel()`)
+and all were correct, so the loss happened inside fiber-js. Version 1.0.0 worked around
+it by multiplying the funding amount by 100.
+
+That loss no longer happens with the current bridge build, so **the ×100 has been
+removed**: `OpenChannel` sends exactly the amount you pass in. If you added a ×100
+anywhere in your own code (e.g. a funding check), remove it.
+
+If you upgrade fiber-js and want to double-check, open a channel with a known amount
+against a peer whose log you can read, and compare what arrived. A too-small amount
+appears in the peer's log like this:
 
 ```
 WARN fnn::fiber::network: Received OpenChannel request from peer ... with CKB funding
 amount 100000000 is less than required auto-accept minimum 10000000000.
 ```
-
-...even though the amount sent should already clear the minimum.
-
-**Root cause - confirmed, not just suspected.** We instrumented all three hops the
-funding amount passes through - the C# `ulong` right after parsing, the hex string
-`FiberPaymentGateway.OpenChannel` builds, and the value `bridge.js` hands to
-`fiber.openChannel()` - and all three showed the correct value (`10000000000` shannons,
-`0x2540be400`) at every step, tested live against the public `onyxia.fiber.channel`
-testnet hub. **The loss happens inside `@nervosnetwork/fiber-js` / the WASM node
-itself**, on the pinned `0.8.0` release - not anywhere in this SDK's C#, jslib, or JS
-bridge code.
-
-Circumstantial support: Fiber's own v0.9 dev log calls out "more reliable channel
-funding" and "fiber-js and npm release improvements" as work done between `0.8.0` and
-`0.9.0-rc`, which lines up with this bug's shape. We have **not** verified whether it's
-fixed on `0.9.0-rc7` - that upgrade was judged too risky to test right before a
-deadline (release candidate, fast-moving package, no time to smoke-test the rest of the
-flow if something else broke).
-
-**Applied fix** (in `FiberPaymentGateway.OpenChannel`): compensate by ×100 before
-hex-encoding.
-
-```csharp
-ulong compensatedAmount = fundingAmountShannons * 100;
-string amountHex = "0x" + compensatedAmount.ToString("x");
-```
-
-**To revisit:** the next time `@nervosnetwork/fiber-js` gets upgraded, re-run this test
-before assuming the workaround is still needed:
-1. Temporarily log the funding amount right before `fiber.openChannel()` in `bridge.js`.
-2. Open a channel against a known peer (e.g. `onyxia.fiber.channel`) with a known
-   amount, without the ×100 compensation.
-3. Compare what was sent against what the channel actually opened with (or what the
-   peer's rejection message reports, if it's below their minimum).
-4. If it now arrives correct, remove the ×100 compensation and this note.
-
-If you're the one picking this back up later and it's still off by 100x on a newer
-version, that's a strong, well-evidenced bug report worth filing against
-[nervosnetwork/fiber](https://github.com/nervosnetwork/fiber/issues) - lead with the
-exact hex sent vs. decimal received, since that's more than most reports start with.
